@@ -1,50 +1,67 @@
-import telebot
-import g4f
-import deepai
+import os
+import uuid
+import asyncio
+import yt_dlp
+from aiogram import Bot, Dispatcher, types
+from aiogram.types import FSInputFile
+from aiogram.filters import Command
+from aiogram.types import Message
 
-# 1. API kalitlarini o‘rnatish
-deepai.api_key = "3f23f872-c41a-4273-9ae0-cd20a5eeb64a"  # DeepAI API kalitingizni qo‘ying
+TOKEN = "8182538234:AAFEGKHgv4axI3oUhwNHkarirlm_mtT4hxg"
 
-# 2. Telegram bot tokeni
-TOKEN = "7638833930:AAHpV_HwcDvG65S7lwLVGBl3uo0nk_MuqE8"
-bot = telebot.TeleBot(TOKEN)
+bot = Bot(token=TOKEN)
+dp = Dispatcher()
 
-# 3. GPT-4 orqali muloqot (g4f)
-def ask_gpt4(prompt):
+@dp.message(Command("start"))
+async def start(message: Message):
+    await message.answer("👋 Salom! Instagram videolarini yuklash uchun video linkini yuboring.")
+
+async def download_instagram_video(video_url: str) -> str | None:
+    """Instagram videolarini `yt-dlp` orqali yuklab olish"""
+    file_name = f"video_{uuid.uuid4()}.mp4"
+    file_path = os.path.join(os.getcwd(), file_name)
+
     try:
-        response = g4f.ChatCompletion.create(
-            model=g4f.models.gpt_4,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        return response
+        ydl_opts = {"outtmpl": file_path, "quiet": True, "format": "best"}
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, lambda: yt_dlp.YoutubeDL(ydl_opts).download([video_url]))
+        return file_path
     except Exception as e:
-        print(e)
-        return "❌ AI bilan bog‘lanishda xatolik yuz berdi."
+        print(f"❌ Yuklab olishda xatolik: {e}")
+        return None
 
-@bot.message_handler(func=lambda message: not message.text.startswith("/"))
-def chat_with_ai(message):
-    reply = ask_gpt4(message.text)
-    bot.send_message(message.chat.id, reply)
+@dp.message()
+async def download_video(message: Message):
+    video_url = message.text.strip()
 
-# 4. Rasm generatsiyasi (DeepAI text2img)
-@bot.message_handler(commands=['image'])
-def generate_image(message):
-    prompt = message.text.replace("/image", "").strip()
-    if not prompt:
-        bot.send_message(message.chat.id, "❌ Iltimos, rasm yaratish uchun so‘rov yuboring!")
+    if not video_url.startswith("https://www.instagram.com/"):
+        await message.reply("❌ Iltimos, to‘g‘ri Instagram video havolasini yuboring!")
         return
-    try:
-        response = deepai.call("text2img", {"text": prompt})
-        image_url = response.get("output_url")
 
-        if image_url:
-            bot.send_photo(message.chat.id, image_url)
-        else:
-            bot.send_message(message.chat.id, "❌ Rasm yaratilishda xatolik yuz berdi.")
-    except Exception as e:
-        print(e)
-        bot.send_message(message.chat.id, "❌ Rasm generatsiyasida xatolik yuz berdi.")
+    # 🔍 1. Link tekshirilmoqda
+    msg = await message.reply("🔍 Link tekshirilmoqda...")
+    await asyncio.sleep(3)
+    await msg.edit_text("📥 Video serverga yuklanmoqda...")
+    await asyncio.sleep(3)
 
-# 5. Botni ishga tushirish
-print("🤖 Bot ishga tushdi...")
-bot.polling(none_stop=True, timeout=60, long_polling_timeout=60)
+    # 📤 3. Telegramga yuklanmoqda (bu xabar o‘chmaydi)
+    msg = await msg.edit_text("📤 Telegramga yuklanmoqda...")
+
+    # 📌 Video yuklash
+    downloaded_file = await download_instagram_video(video_url)
+
+    if downloaded_file:
+        video = FSInputFile(downloaded_file)
+        await bot.send_video(chat_id=message.chat.id, video=video, caption="✅ Video tayyor!")
+        os.remove(downloaded_file)  # Yuklangan videoni o‘chirish
+        await msg.delete()  # "Telegramga yuklanmoqda..." xabarini o‘chirish
+    else:
+        await msg.edit_text("❌ Videoni yuklab bo‘lmadi! Boshqa linkni sinab ko‘ring.")
+
+async def main():
+    print("🤖 Bot ishga tushdi...")
+    await bot.delete_webhook(drop_pending_updates=True)
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
